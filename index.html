@@ -452,6 +452,35 @@
       gap: 8px;
       margin-top: 10px;
     }
+
+    /* ── PIN LOCK ── */
+    #pin-overlay {
+      position: fixed; inset: 0; background: linear-gradient(135deg, #1e3a8a 0%, #2563eb 100%);
+      z-index: 99999; display: flex; flex-direction: column; align-items: center; justify-content: center;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    }
+    #pin-overlay.hidden { display: none; }
+    .pin-logo { margin-bottom: 10px; }
+    .pin-title { color: #fff; font-size: 22px; font-weight: 700; margin-bottom: 4px; }
+    .pin-sub { color: rgba(255,255,255,0.75); font-size: 13px; margin-bottom: 32px; }
+    .pin-dots { display: flex; gap: 14px; margin-bottom: 28px; }
+    .pin-dot { width: 16px; height: 16px; border-radius: 50%; border: 2px solid rgba(255,255,255,0.5); background: transparent; transition: background 0.15s; }
+    .pin-dot.filled { background: #fff; border-color: #fff; }
+    .pin-pad { display: grid; grid-template-columns: repeat(3, 72px); gap: 12px; }
+    .pin-btn {
+      width: 72px; height: 72px; border-radius: 50%; border: 2px solid rgba(255,255,255,0.25);
+      background: rgba(255,255,255,0.1); color: #fff; font-size: 22px; font-weight: 500;
+      cursor: pointer; transition: all 0.15s; display: flex; align-items: center; justify-content: center;
+    }
+    .pin-btn:hover { background: rgba(255,255,255,0.22); }
+    .pin-btn:active { transform: scale(0.93); background: rgba(255,255,255,0.3); }
+    .pin-btn.del { font-size: 18px; }
+    .pin-btn.empty { border: none; background: transparent; cursor: default; }
+    .pin-error { color: #fca5a5; font-size: 13px; margin-top: 16px; min-height: 18px; font-weight: 500; }
+    .pin-setup-label { color: rgba(255,255,255,0.85); font-size: 13px; margin-bottom: 20px; text-align: center; max-width: 260px; }
+    .pin-shake { animation: pinShake 0.4s ease; }
+    @keyframes pinShake { 0%,100%{transform:translateX(0)} 20%{transform:translateX(-8px)} 40%{transform:translateX(8px)} 60%{transform:translateX(-6px)} 80%{transform:translateX(6px)} }
+    .pin-lockout { color: #fde68a; font-size: 13px; margin-top: 14px; }
   </style>
 </head>
 <body>
@@ -1259,13 +1288,25 @@
         y += 4;
 
         // ── Rent Breakdown ────────────────────────────────────────────
-        if (tenant.rent || tenant.wifi || tenant.garbage) {
-          y = sectionTitle('Monthly Charge Breakdown', y);
-          if (tenant.rent)    y = row('Rent', 'KES ' + parseFloat(tenant.rent).toLocaleString(), y);
-          if (tenant.wifi)    y = row('WiFi', 'KES ' + parseFloat(tenant.wifi).toLocaleString(), y);
-          if (tenant.garbage) y = row('Garbage Collection', 'KES ' + parseFloat(tenant.garbage).toLocaleString(), y);
-          y += 4;
-        }
+        const rentAmt    = parseFloat(tenant.rent)    || 0;
+        const wifiAmt    = parseFloat(tenant.wifi)    || 0;
+        const garbageAmt = parseFloat(tenant.garbage) || 0;
+
+        y = sectionTitle('Monthly Charge Breakdown', y);
+        y = row('Rent',               'KES ' + rentAmt.toLocaleString(),    y);
+        y = row('WiFi',               'KES ' + wifiAmt.toLocaleString(),    y);
+        y = row('Garbage Collection', 'KES ' + garbageAmt.toLocaleString(), y);
+
+        // Total line
+        doc.setFillColor(243, 244, 246);
+        doc.rect(margin, y, colRight - margin, 9, 'F');
+        doc.setFontSize(9);
+        doc.setFont('helvetica', 'bold');
+        doc.setTextColor(17, 24, 39);
+        doc.text('TOTAL MONTHLY BILL', margin + 2, y + 6);
+        doc.setTextColor(37, 99, 235);
+        doc.text('KES ' + bill.toLocaleString(), colRight - 2, y + 6, { align: 'right' });
+        y += 13;
 
         // ── Footer ────────────────────────────────────────────────────
         const pageH = doc.internal.pageSize.getHeight();
@@ -1542,6 +1583,152 @@
     renderDashboard();
     renderPayments();
 
+
+    // ============ PIN LOCK ============
+    (function initPIN() {
+      let pinBuffer = '';
+      let pinSetupStage = 0;   // 0=login, 1=set new, 2=confirm new
+      let pinTemp = '';
+      let failCount = 0;
+      let lockedUntil = 0;
+      const STORED_KEY = 'njau-pin';
+
+      const overlay  = document.getElementById('pin-overlay');
+      const dotsEl   = document.getElementById('pin-dots');
+      const subEl    = document.getElementById('pin-sub');
+      const setupLbl = document.getElementById('pin-setup-label');
+      const errEl    = document.getElementById('pin-error');
+      const lockEl   = document.getElementById('pin-lockout');
+      const forgotBtn= document.getElementById('pin-forgot');
+
+      function getStoredPin() { return localStorage.getItem(STORED_KEY); }
+      function savePin(p)     { localStorage.setItem(STORED_KEY, p); }
+
+      function updateDots(len) {
+        for (let i = 0; i < 4; i++) {
+          document.getElementById('dot' + i).classList.toggle('filled', i < len);
+        }
+      }
+
+      function shake() {
+        const d = document.getElementById('pin-dots');
+        d.classList.remove('pin-shake');
+        void d.offsetWidth;
+        d.classList.add('pin-shake');
+      }
+
+      function reset(msg='') {
+        pinBuffer = '';
+        updateDots(0);
+        errEl.textContent = msg;
+      }
+
+      function startLockout() {
+        lockedUntil = Date.now() + 30000;
+        forgotBtn.style.display = 'none';
+        const tick = setInterval(() => {
+          const rem = Math.ceil((lockedUntil - Date.now()) / 1000);
+          if (rem <= 0) {
+            clearInterval(tick);
+            lockEl.textContent = '';
+            failCount = 0;
+            forgotBtn.style.display = '';
+            reset();
+          } else {
+            lockEl.textContent = 'Too many attempts. Try again in ' + rem + 's';
+          }
+        }, 500);
+      }
+
+      function showSetup() {
+        pinSetupStage = 1;
+        subEl.style.display = 'none';
+        setupLbl.style.display = '';
+        setupLbl.textContent = 'No PIN set yet. Choose a 4-digit PIN:';
+        forgotBtn.style.display = 'none';
+        reset();
+      }
+
+      function unlock() {
+        overlay.classList.add('hidden');
+      }
+
+      window.pinPress = function(d) {
+        if (Date.now() < lockedUntil) return;
+        if (pinBuffer.length >= 4) return;
+        pinBuffer += d;
+        updateDots(pinBuffer.length);
+
+        if (pinBuffer.length === 4) {
+          setTimeout(() => {
+            const stored = getStoredPin();
+
+            // ── Setup flow ────────────────────────────────────────
+            if (pinSetupStage === 1) {
+              pinTemp = pinBuffer;
+              pinSetupStage = 2;
+              setupLbl.textContent = 'Confirm your PIN:';
+              reset();
+              return;
+            }
+            if (pinSetupStage === 2) {
+              if (pinBuffer === pinTemp) {
+                savePin(pinTemp);
+                unlock();
+              } else {
+                shake();
+                pinSetupStage = 1;
+                setupLbl.textContent = 'PINs did not match. Choose again:';
+                reset("PINs didn't match — try again");
+              }
+              return;
+            }
+
+            // ── Login flow ────────────────────────────────────────
+            if (pinBuffer === stored) {
+              failCount = 0;
+              unlock();
+            } else {
+              failCount++;
+              shake();
+              if (failCount >= 3) {
+                reset('');
+                startLockout();
+              } else {
+                reset('Incorrect PIN (' + (3 - failCount) + ' attempt' + (3 - failCount === 1 ? '' : 's') + ' left)');
+              }
+            }
+          }, 80);
+        }
+      };
+
+      window.pinDel = function() {
+        if (Date.now() < lockedUntil) return;
+        if (pinBuffer.length > 0) {
+          pinBuffer = pinBuffer.slice(0, -1);
+          updateDots(pinBuffer.length);
+          errEl.textContent = '';
+        }
+      };
+
+      window.pinForgot = function() {
+        if (!confirm('This will DELETE all your tenant and payment data and reset the PIN. Are you absolutely sure?')) return;
+        localStorage.clear();
+        tenants = []; payments = [];
+        saveData();
+        pinSetupStage = 0;
+        showSetup();
+      };
+
+      // Boot
+      if (!getStoredPin()) {
+        showSetup();
+      } else {
+        subEl.textContent = 'Enter your PIN';
+        setupLbl.style.display = 'none';
+      }
+    })();
+
     // ============ PWA SETUP ============
     // Inject manifest dynamically so this works as a single .html file
     (function injectManifest() {
@@ -1627,6 +1814,56 @@
       if (banner) banner.style.display = 'none';
     });
   </script>
+
+  <!-- PIN LOCK OVERLAY -->
+  <div id="pin-overlay">
+    <div class="pin-logo">
+      <svg width="56" height="56" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
+        <circle cx="32" cy="32" r="32" fill="rgba(255,255,255,0.15)"/>
+        <circle cx="32" cy="32" r="27" fill="#ffffff"/>
+        <g transform="translate(32, 32)">
+          <path d="M -14 10 L -14 -6 L -7 -13 L 0 -6 L 0 10 Z" fill="#2563eb"/>
+          <path d="M 2 10 L 2 -2 L 9 -8 L 16 -2 L 16 10 Z" fill="#3b82f6"/>
+          <rect x="-11" y="-2" width="3.5" height="3.5" fill="#ffffff"/>
+          <rect x="-5" y="-2" width="3.5" height="3.5" fill="#ffffff"/>
+          <rect x="-11" y="4" width="3.5" height="3.5" fill="#ffffff"/>
+          <rect x="-5" y="4" width="3.5" height="3.5" fill="#ffffff"/>
+          <rect x="5" y="1" width="3" height="3" fill="#ffffff"/>
+          <rect x="10.5" y="1" width="3" height="3" fill="#ffffff"/>
+          <rect x="5" y="6" width="3" height="3" fill="#ffffff"/>
+          <rect x="10.5" y="6" width="3" height="3" fill="#ffffff"/>
+          <rect x="-2.5" y="3" width="5" height="7" fill="#1e40af"/>
+        </g>
+      </svg>
+    </div>
+    <div class="pin-title">Njau's Empire</div>
+    <div id="pin-sub" class="pin-sub">Enter your PIN</div>
+    <div id="pin-setup-label" class="pin-setup-label" style="display:none;"></div>
+    <div class="pin-dots" id="pin-dots">
+      <div class="pin-dot" id="dot0"></div>
+      <div class="pin-dot" id="dot1"></div>
+      <div class="pin-dot" id="dot2"></div>
+      <div class="pin-dot" id="dot3"></div>
+    </div>
+    <div class="pin-pad">
+      <button class="pin-btn" onclick="pinPress('1')">1</button>
+      <button class="pin-btn" onclick="pinPress('2')">2</button>
+      <button class="pin-btn" onclick="pinPress('3')">3</button>
+      <button class="pin-btn" onclick="pinPress('4')">4</button>
+      <button class="pin-btn" onclick="pinPress('5')">5</button>
+      <button class="pin-btn" onclick="pinPress('6')">6</button>
+      <button class="pin-btn" onclick="pinPress('7')">7</button>
+      <button class="pin-btn" onclick="pinPress('8')">8</button>
+      <button class="pin-btn" onclick="pinPress('9')">9</button>
+      <button class="pin-btn empty"></button>
+      <button class="pin-btn" onclick="pinPress('0')">0</button>
+      <button class="pin-btn del" onclick="pinDel()">⌫</button>
+    </div>
+    <div id="pin-error" class="pin-error"></div>
+    <div id="pin-lockout" class="pin-lockout"></div>
+    <button id="pin-forgot" onclick="pinForgot()" style="margin-top:28px;background:none;border:none;color:rgba(255,255,255,0.45);font-size:12px;cursor:pointer;text-decoration:underline;">Forgot PIN (clears all data)</button>
+  </div>
+
   <!-- PWA Install Banner -->
   <div id="pwa-install-banner" style="display:none; position:fixed; bottom:20px; left:50%; transform:translateX(-50%); background:#1e40af; color:#fff; padding:14px 20px; border-radius:12px; box-shadow:0 8px 24px rgba(17,24,39,0.25); z-index:9999; align-items:center; gap:14px; max-width:420px; width:calc(100% - 40px); font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
     <div style="flex:1;">
