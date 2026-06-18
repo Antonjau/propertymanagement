@@ -476,6 +476,8 @@
     .pin-btn:active { transform: scale(0.93); background: rgba(255,255,255,0.3); }
     .pin-btn.del { font-size: 18px; }
     .pin-btn.empty { border: none; background: transparent; cursor: default; }
+    .pin-btn.enter { font-size: 13px; font-weight: 700; background: rgba(16,185,129,0.25); border-color: rgba(16,185,129,0.6); letter-spacing: 0.5px; }
+    .pin-btn.enter:hover { background: rgba(16,185,129,0.4); }
     .pin-error { color: #fca5a5; font-size: 13px; margin-top: 16px; min-height: 18px; font-weight: 500; }
     .pin-setup-label { color: rgba(255,255,255,0.85); font-size: 13px; margin-bottom: 20px; text-align: center; max-width: 260px; }
     .pin-shake { animation: pinShake 0.4s ease; }
@@ -1502,20 +1504,28 @@
       
       if (!phone) { alert('Tenant has no phone number'); return; }
       
+      // Normalize phone to international format without leading +
+      function normalizePhone(p) {
+        p = p.replace(/\s+/g, '').replace(/-/g, '');
+        if (p.startsWith('+')) p = p.slice(1);           // +254... → 254...
+        if (p.startsWith('07') || p.startsWith('01')) p = '254' + p.slice(1); // 07xx → 254...
+        if (!p.startsWith('254')) p = '254' + p;         // bare number fallback
+        return p;
+      }
+
       let link = '';
       if (channel === 'whatsapp') {
+        const normalizedPhone = normalizePhone(phone);
         const msg = encodeURIComponent(text);
-        link = `https://wa.me/254${phone.replace(/^0/, '')}?text=${msg}`;
+        link = `https://wa.me/${normalizedPhone}?text=${msg}`;
       } else if (channel === 'sms') {
         const msg = encodeURIComponent(text);
-        // AfricasTalking or Jambaz integration (you'd need API keys)
         link = `https://send.africasTalking.com/sms?to=%2B254${phone.replace(/^0/, '')}&message=${msg}`;
         alert('✅ Copy the message above and send via Jambaz.co.ke or AfricasTalking SMS service with your API key');
       }
       
       if (link && channel === 'whatsapp') {
         window.open(link, '_blank');
-        alert('✅ WhatsApp link opened. Complete the send in WhatsApp app');
       }
     };
     
@@ -1600,6 +1610,7 @@
       const errEl    = document.getElementById('pin-error');
       const lockEl   = document.getElementById('pin-lockout');
       const forgotBtn= document.getElementById('pin-forgot');
+      const enterBtn = document.getElementById('pin-enter-btn');
 
       function getStoredPin() { return localStorage.getItem(STORED_KEY); }
       function savePin(p)     { localStorage.setItem(STORED_KEY, p); }
@@ -1607,6 +1618,10 @@
       function updateDots(len) {
         for (let i = 0; i < 4; i++) {
           document.getElementById('dot' + i).classList.toggle('filled', i < len);
+        }
+        // Show Enter button whenever 4 digits are entered
+        if (enterBtn) {
+          enterBtn.style.display = (len === 4) ? '' : 'none';
         }
       }
 
@@ -1653,53 +1668,56 @@
         overlay.classList.add('hidden');
       }
 
+      // Called when Enter/OK button is pressed — same as auto-submit
+      window.pinEnter = function() {
+        if (pinBuffer.length === 4) processPinBuffer();
+      };
+
+      function processPinBuffer() {
+        const stored = getStoredPin();
+
+        // ── Setup flow ────────────────────────────────────────
+        if (pinSetupStage === 1) {
+          pinTemp = pinBuffer;
+          pinSetupStage = 2;
+          setupLbl.textContent = 'Confirm your PIN:';
+          reset();
+          return;
+        }
+        if (pinSetupStage === 2) {
+          if (pinBuffer === pinTemp) {
+            savePin(pinTemp);
+            unlock();
+          } else {
+            shake();
+            pinSetupStage = 1;
+            setupLbl.textContent = 'PINs did not match. Choose again:';
+            reset("PINs didn't match — try again");
+          }
+          return;
+        }
+
+        // ── Login flow ────────────────────────────────────────
+        if (pinBuffer === stored) {
+          failCount = 0;
+          unlock();
+        } else {
+          failCount++;
+          shake();
+          if (failCount >= 3) {
+            reset('');
+            startLockout();
+          } else {
+            reset('Incorrect PIN (' + (3 - failCount) + ' attempt' + (3 - failCount === 1 ? '' : 's') + ' left)');
+          }
+        }
+      }
+
       window.pinPress = function(d) {
         if (Date.now() < lockedUntil) return;
         if (pinBuffer.length >= 4) return;
         pinBuffer += d;
         updateDots(pinBuffer.length);
-
-        if (pinBuffer.length === 4) {
-          setTimeout(() => {
-            const stored = getStoredPin();
-
-            // ── Setup flow ────────────────────────────────────────
-            if (pinSetupStage === 1) {
-              pinTemp = pinBuffer;
-              pinSetupStage = 2;
-              setupLbl.textContent = 'Confirm your PIN:';
-              reset();
-              return;
-            }
-            if (pinSetupStage === 2) {
-              if (pinBuffer === pinTemp) {
-                savePin(pinTemp);
-                unlock();
-              } else {
-                shake();
-                pinSetupStage = 1;
-                setupLbl.textContent = 'PINs did not match. Choose again:';
-                reset("PINs didn't match — try again");
-              }
-              return;
-            }
-
-            // ── Login flow ────────────────────────────────────────
-            if (pinBuffer === stored) {
-              failCount = 0;
-              unlock();
-            } else {
-              failCount++;
-              shake();
-              if (failCount >= 3) {
-                reset('');
-                startLockout();
-              } else {
-                reset('Incorrect PIN (' + (3 - failCount) + ' attempt' + (3 - failCount === 1 ? '' : 's') + ' left)');
-              }
-            }
-          }, 80);
-        }
       };
 
       window.pinDel = function() {
@@ -1712,10 +1730,8 @@
       };
 
       window.pinForgot = function() {
-        if (!confirm('This will DELETE all your tenant and payment data and reset the PIN. Are you absolutely sure?')) return;
-        localStorage.clear();
-        tenants = []; payments = [];
-        saveData();
+        if (!confirm('Reset your PIN?\n\nYour tenant and payment data will NOT be deleted — only your PIN will be cleared so you can set a new one.')) return;
+        localStorage.removeItem(STORED_KEY);
         pinSetupStage = 0;
         showSetup();
       };
@@ -1855,13 +1871,13 @@
       <button class="pin-btn" onclick="pinPress('7')">7</button>
       <button class="pin-btn" onclick="pinPress('8')">8</button>
       <button class="pin-btn" onclick="pinPress('9')">9</button>
-      <button class="pin-btn empty"></button>
-      <button class="pin-btn" onclick="pinPress('0')">0</button>
       <button class="pin-btn del" onclick="pinDel()">⌫</button>
+      <button class="pin-btn" onclick="pinPress('0')">0</button>
+      <button class="pin-btn enter" id="pin-enter-btn" onclick="pinEnter()" style="display:none;">OK ✓</button>
     </div>
     <div id="pin-error" class="pin-error"></div>
     <div id="pin-lockout" class="pin-lockout"></div>
-    <button id="pin-forgot" onclick="pinForgot()" style="margin-top:28px;background:none;border:none;color:rgba(255,255,255,0.45);font-size:12px;cursor:pointer;text-decoration:underline;">Forgot PIN (clears all data)</button>
+    <button id="pin-forgot" onclick="pinForgot()" style="margin-top:28px;background:none;border:none;color:rgba(255,255,255,0.45);font-size:12px;cursor:pointer;text-decoration:underline;">Forgot PIN</button>
   </div>
 
   <!-- PWA Install Banner -->
