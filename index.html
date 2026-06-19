@@ -860,16 +860,18 @@
                       <th>Amount</th>
                       <th>Method</th>
                       <th>Date</th>
+                      <th>Receipt</th>
                     </tr>
                   </thead>
                   <tbody>
-                    ${tenantPayments.length === 0 ? '<tr><td colspan="5" class="empty">No payments recorded</td></tr>' : 
+                    ${tenantPayments.length === 0 ? '<tr><td colspan="6" class="empty">No payments recorded</td></tr>' : 
                       tenantPayments.map(p => `<tr>
                         <td style="font-weight: 600;">${p.month}</td>
                         <td><span class="badge pending">${p.category || 'Full'}</span></td>
                         <td style="font-weight: 600;" class="sensitive">KES ${parseFloat(p.amount).toLocaleString()}</td>
                         <td>${p.method}</td>
                         <td style="color: var(--text-secondary); font-size: 12px;">${p.date}</td>
+                        <td><button class="btn sm secondary" title="Download Receipt PDF" onclick="window.downloadReceipt('${p.id}')"><i class="ti ti-file-text"></i></button></td>
                       </tr>`).join('')
                     }
                   </tbody>
@@ -968,11 +970,100 @@
           <td style="color: var(--text-secondary); font-size: 12px; font-family: monospace;">${p.ref || '-'}</td>
           <td style="color: var(--primary-dark); font-size: 12px; font-family: monospace; font-weight: 600;">${receiptRef}</td>
           <td style="color: var(--text-secondary); font-size: 12px;">${p.date}</td>
-          <td><button class="btn sm danger" onclick="window.deletePayment('${p.id}')"><i class="ti ti-trash"></i></button></td>
+          <td style="display: flex; gap: 6px;">
+            <button class="btn sm secondary" title="Download Receipt PDF" onclick="window.downloadReceipt('${p.id}')"><i class="ti ti-file-text"></i></button>
+            <button class="btn sm danger" onclick="window.deletePayment('${p.id}')"><i class="ti ti-trash"></i></button>
+          </td>
         </tr>`;
       }).join('');
     }
     
+    // ============ RECEIPT PDF ============
+    window.downloadReceipt = function(paymentId) {
+      const p = payments.find(pay => pay.id === paymentId);
+      if (!p) { alert('Payment not found'); return; }
+      const tenant = tenants.find(t => t.id === p.tenantId);
+      const receiptRef = p.receiptRef || (tenant ? buildReceiptRef(p, tenant) : '-');
+
+      const { jsPDF } = window.jspdf;
+      const doc = new jsPDF({ unit: 'pt', format: 'a4' });
+      const pageW = doc.internal.pageSize.getWidth();
+      const left = 50;
+      let y = 60;
+
+      // Header
+      doc.setFillColor(37, 99, 235);
+      doc.rect(0, 0, pageW, 90, 'F');
+      doc.setTextColor(255, 255, 255);
+      doc.setFontSize(22);
+      doc.setFont('helvetica', 'bold');
+      doc.text("Njau's Empire", left, 45);
+      doc.setFontSize(11);
+      doc.setFont('helvetica', 'normal');
+      doc.text('Property Management - Payment Receipt', left, 65);
+
+      y = 130;
+      doc.setTextColor(17, 24, 39);
+      doc.setFontSize(14);
+      doc.setFont('helvetica', 'bold');
+      doc.text('Receipt', left, y);
+
+      doc.setFontSize(10);
+      doc.setFont('helvetica', 'normal');
+      doc.setTextColor(107, 114, 128);
+      doc.text(`Receipt Ref: ${receiptRef}`, pageW - 50, y, { align: 'right' });
+
+      y += 30;
+      doc.setDrawColor(229, 231, 235);
+      doc.line(left, y, pageW - 50, y);
+      y += 30;
+
+      const rows = [
+        ['Tenant Name', tenant ? tenant.name : '(Deleted Tenant)'],
+        ['Phone', tenant && tenant.phone ? tenant.phone : '-'],
+        ['Meter / Unit #', tenant && tenant.meter ? tenant.meter : '-'],
+        ['Payment Month', p.month || '-'],
+        ['Category', p.category || 'Full'],
+        ['Payment Method', p.method || '-'],
+        ['Reference / M-Pesa Code', p.ref || '-'],
+        ['Date Paid', p.date || '-'],
+      ];
+
+      doc.setFontSize(11);
+      rows.forEach(([label, value]) => {
+        doc.setTextColor(107, 114, 128);
+        doc.setFont('helvetica', 'normal');
+        doc.text(label, left, y);
+        doc.setTextColor(17, 24, 39);
+        doc.setFont('helvetica', 'bold');
+        doc.text(String(value), left + 220, y);
+        y += 24;
+      });
+
+      y += 10;
+      doc.setDrawColor(229, 231, 235);
+      doc.line(left, y, pageW - 50, y);
+      y += 35;
+
+      doc.setFontSize(12);
+      doc.setTextColor(107, 114, 128);
+      doc.setFont('helvetica', 'normal');
+      doc.text('Amount Paid', left, y);
+      doc.setFontSize(20);
+      doc.setTextColor(16, 185, 129);
+      doc.setFont('helvetica', 'bold');
+      doc.text(`KES ${parseFloat(p.amount).toLocaleString()}`, pageW - 50, y, { align: 'right' });
+
+      y += 50;
+      doc.setFontSize(9);
+      doc.setTextColor(156, 163, 175);
+      doc.setFont('helvetica', 'normal');
+      doc.text(`Generated on ${today()} - Njau's Empire Property Management System`, left, y);
+
+      const fileName = `Receipt-${receiptRef}.pdf`;
+      doc.save(fileName);
+    };
+
     // ============ MESSAGES & NOTIFICATIONS ============
     function renderOverdueTable() { /* Unchanged internal logic */ }
     window.selectTenantMsg = function(id, name, phone) { /* Unchanged */ };
