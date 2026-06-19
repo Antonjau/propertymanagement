@@ -219,7 +219,7 @@
     .pin-btn:hover { background: rgba(255,255,255,0.22); }
     .pin-btn:active { transform: scale(0.93); background: rgba(255,255,255,0.3); }
     .pin-btn.del { font-size: 18px; }
-    .pin-btn.ok-btn { background: rgba(16, 185, 129, 0.5); border-color: rgba(16, 185, 129, 0.8); font-size: 18px; font-weight: bold; }
+    .pin-btn.ok-btn { background: rgba(16, 185, 129, 0.5); border-color: rgba(16, 185, 129, 0.8); font-size: 22px; font-weight: bold; }
     .pin-btn.ok-btn:hover { background: rgba(16, 185, 129, 0.7); }
     .pin-error { color: #fca5a5; font-size: 13px; margin-top: 16px; min-height: 18px; font-weight: 500; }
     .pin-setup-label { color: rgba(255,255,255,0.85); font-size: 13px; margin-bottom: 20px; text-align: center; max-width: 260px; }
@@ -460,6 +460,51 @@
         <button class="btn primary" onclick="window.saveTenant()">Save Tenant</button>
       </div>
     </div>
+  </div>
+
+  <div id="pin-overlay">
+    <div class="pin-logo">
+      <svg width="56" height="56" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
+        <circle cx="32" cy="32" r="32" fill="rgba(255,255,255,0.15)"/>
+        <circle cx="32" cy="32" r="27" fill="#ffffff"/>
+        <g transform="translate(32, 32)">
+          <path d="M -14 10 L -14 -6 L -7 -13 L 0 -6 L 0 10 Z" fill="#2563eb"/>
+          <path d="M 2 10 L 2 -2 L 9 -8 L 16 -2 L 16 10 Z" fill="#3b82f6"/>
+          <rect x="-11" y="-2" width="3.5" height="3.5" fill="#ffffff"/>
+          <rect x="-5" y="-2" width="3.5" height="3.5" fill="#ffffff"/>
+          <rect x="-11" y="4" width="3.5" height="3.5" fill="#ffffff"/>
+          <rect x="-5" y="4" width="3.5" height="3.5" fill="#ffffff"/>
+          <rect x="5" y="1" width="3" height="3" fill="#ffffff"/>
+          <rect x="10.5" y="1" width="3" height="3" fill="#ffffff"/>
+          <rect x="5" y="6" width="3" height="3" fill="#ffffff"/>
+          <rect x="10.5" y="6" width="3" height="3" fill="#ffffff"/>
+          <rect x="-2.5" y="3" width="5" height="7" fill="#1e40af"/>
+        </g>
+      </svg>
+    </div>
+    <div class="pin-title">Njau's Empire</div>
+    <div id="pin-sub" class="pin-sub">Enter your PIN</div>
+    <div id="pin-setup-label" class="pin-setup-label" style="display:none;"></div>
+    <div class="pin-dots" id="pin-dots">
+      <div class="pin-dot" id="dot0"></div><div class="pin-dot" id="dot1"></div>
+      <div class="pin-dot" id="dot2"></div><div class="pin-dot" id="dot3"></div>
+    </div>
+    <div class="pin-pad">
+      <button class="pin-btn" onclick="pinPress('1')">1</button>
+      <button class="pin-btn" onclick="pinPress('2')">2</button>
+      <button class="pin-btn" onclick="pinPress('3')">3</button>
+      <button class="pin-btn" onclick="pinPress('4')">4</button>
+      <button class="pin-btn" onclick="pinPress('5')">5</button>
+      <button class="pin-btn" onclick="pinPress('6')">6</button>
+      <button class="pin-btn" onclick="pinPress('7')">7</button>
+      <button class="pin-btn" onclick="pinPress('8')">8</button>
+      <button class="pin-btn" onclick="pinPress('9')">9</button>
+      <button class="pin-btn del" onclick="pinDel()">⌫</button>
+      <button class="pin-btn" onclick="pinPress('0')">0</button>
+      <button class="pin-btn ok-btn" onclick="pinSubmit()" aria-label="Confirm PIN">&#10003;</button>
+    </div>
+    <div id="pin-error" class="pin-error"></div>
+    <div id="pin-lockout" class="pin-lockout"></div>
   </div>
 
   <script>
@@ -960,7 +1005,13 @@
 
 
     // ============ PIN LOCK ============
-    (function initPIN() {
+    // NOTE: This block now runs inside DOMContentLoaded so that #pin-overlay
+    // and its children definitely exist before we query them. Previously the
+    // script ran before the #pin-overlay markup had been parsed, so
+    // getElementById('pin-overlay') returned null and every call to
+    // unlock()/overlay.classList.add('hidden') threw silently — leaving the
+    // PIN screen stuck on top of the app even after a correct PIN or OK press.
+    document.addEventListener('DOMContentLoaded', function initPIN() {
       let pinBuffer = '';
       let pinSetupStage = 0;   // 0=login, 1=set new, 2=confirm new
       let pinTemp = '';
@@ -969,21 +1020,26 @@
       const STORED_KEY = 'njau-pin';
 
       const overlay  = document.getElementById('pin-overlay');
-      const dotsEl   = document.getElementById('pin-dots');
       const subEl    = document.getElementById('pin-sub');
       const setupLbl = document.getElementById('pin-setup-label');
       const errEl    = document.getElementById('pin-error');
       const lockEl   = document.getElementById('pin-lockout');
 
+      if (!overlay) return; // safety guard, should never happen now
+
       function getStoredPin() { return localStorage.getItem(STORED_KEY); }
       function savePin(p)     { localStorage.setItem(STORED_KEY, p); }
 
       function updateDots(len) {
-        for (let i = 0; i < 4; i++) document.getElementById('dot' + i).classList.toggle('filled', i < len);
+        for (let i = 0; i < 4; i++) {
+          const dot = document.getElementById('dot' + i);
+          if (dot) dot.classList.toggle('filled', i < len);
+        }
       }
 
       function shake() {
         const d = document.getElementById('pin-dots');
+        if (!d) return;
         d.classList.remove('pin-shake'); void d.offsetWidth; d.classList.add('pin-shake');
       }
 
@@ -1002,7 +1058,7 @@
         pinSetupStage = 1;
         subEl.style.display = 'none';
         setupLbl.style.display = '';
-        setupLbl.textContent = 'Enter a 4-digit PIN for this device, then press OK';
+        setupLbl.textContent = 'Enter a 4-digit PIN for this device, then press the tick';
         reset();
       }
 
@@ -1010,43 +1066,48 @@
 
       window.pinPress = function(d) {
         if (Date.now() < lockedUntil) return;
-        // Prevent typing more than 4 digits
-        if (pinBuffer.length >= 4) return; 
-        
+        if (pinBuffer.length >= 4) return;
+
         pinBuffer += d;
         updateDots(pinBuffer.length);
-
-        // AUTO-UNLOCK for Login Mode ONLY
-        if (pinSetupStage === 0 && pinBuffer.length === 4) {
-          setTimeout(() => {
-            const stored = getStoredPin();
-            if (pinBuffer === stored) {
-              failCount = 0;
-              unlock();
-            } else {
-              failCount++; shake();
-              if (failCount >= 3) { reset(''); startLockout(); } 
-              else { reset('Incorrect PIN (' + (3 - failCount) + ' attempts left)'); }
-            }
-          }, 80);
-        }
+        errEl.textContent = '';
       };
 
-      // NEW: Explicit Submission function triggered by the OK button
+      // Single explicit submission path for ALL stages (login, set, confirm).
+      // Login no longer auto-unlocks on the 4th digit — pressing the tick is
+      // now what actually checks/unlocks, so the flow is consistent and the
+      // overlay reliably closes instead of "sticking".
       window.pinSubmit = function() {
         if (Date.now() < lockedUntil) return;
-        
-        if (pinSetupStage === 1) {
-          if (pinBuffer.length !== 4) { shake(); reset("Please enter exactly 4 digits"); return; }
+
+        if (pinBuffer.length !== 4) {
+          shake();
+          reset('Please enter exactly 4 digits');
+          return;
+        }
+
+        if (pinSetupStage === 0) {
+          const stored = getStoredPin();
+          if (pinBuffer === stored) {
+            failCount = 0;
+            reset();
+            unlock();
+          } else {
+            failCount++; shake();
+            if (failCount >= 3) { reset(''); startLockout(); }
+            else { reset('Incorrect PIN (' + (3 - failCount) + ' attempts left)'); }
+          }
+        }
+        else if (pinSetupStage === 1) {
           pinTemp = pinBuffer;
           pinSetupStage = 2;
-          setupLbl.textContent = 'Confirm your PIN and press OK:';
+          setupLbl.textContent = 'Confirm your PIN and press the tick:';
           reset();
-        } 
+        }
         else if (pinSetupStage === 2) {
-          if (pinBuffer.length !== 4) { shake(); reset("Please enter exactly 4 digits"); return; }
           if (pinBuffer === pinTemp) {
             savePin(pinTemp);
+            reset();
             unlock();
           } else {
             shake();
@@ -1054,11 +1115,6 @@
             setupLbl.textContent = 'PINs did not match. Choose again:';
             reset("PINs didn't match — try again");
           }
-        }
-        else if (pinSetupStage === 0) {
-            // Optional: If they press OK during login, you can shake if it's less than 4 digits,
-            // or just ignore it since it auto-submits on the 4th digit anyway.
-            if(pinBuffer.length < 4) { shake(); reset("Enter 4 digits"); }
         }
       };
 
@@ -1073,52 +1129,7 @@
 
       if (!getStoredPin()) { showSetup(); } 
       else { subEl.textContent = 'Enter your PIN'; setupLbl.style.display = 'none'; }
-    })();
+    });
   </script>
-
-  <div id="pin-overlay">
-    <div class="pin-logo">
-      <svg width="56" height="56" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
-        <circle cx="32" cy="32" r="32" fill="rgba(255,255,255,0.15)"/>
-        <circle cx="32" cy="32" r="27" fill="#ffffff"/>
-        <g transform="translate(32, 32)">
-          <path d="M -14 10 L -14 -6 L -7 -13 L 0 -6 L 0 10 Z" fill="#2563eb"/>
-          <path d="M 2 10 L 2 -2 L 9 -8 L 16 -2 L 16 10 Z" fill="#3b82f6"/>
-          <rect x="-11" y="-2" width="3.5" height="3.5" fill="#ffffff"/>
-          <rect x="-5" y="-2" width="3.5" height="3.5" fill="#ffffff"/>
-          <rect x="-11" y="4" width="3.5" height="3.5" fill="#ffffff"/>
-          <rect x="-5" y="4" width="3.5" height="3.5" fill="#ffffff"/>
-          <rect x="5" y="1" width="3" height="3" fill="#ffffff"/>
-          <rect x="10.5" y="1" width="3" height="3" fill="#ffffff"/>
-          <rect x="5" y="6" width="3" height="3" fill="#ffffff"/>
-          <rect x="10.5" y="6" width="3" height="3" fill="#ffffff"/>
-          <rect x="-2.5" y="3" width="5" height="7" fill="#1e40af"/>
-        </g>
-      </svg>
-    </div>
-    <div class="pin-title">Njau's Empire</div>
-    <div id="pin-sub" class="pin-sub">Enter your PIN</div>
-    <div id="pin-setup-label" class="pin-setup-label" style="display:none;"></div>
-    <div class="pin-dots" id="pin-dots">
-      <div class="pin-dot" id="dot0"></div><div class="pin-dot" id="dot1"></div>
-      <div class="pin-dot" id="dot2"></div><div class="pin-dot" id="dot3"></div>
-    </div>
-    <div class="pin-pad">
-      <button class="pin-btn" onclick="pinPress('1')">1</button>
-      <button class="pin-btn" onclick="pinPress('2')">2</button>
-      <button class="pin-btn" onclick="pinPress('3')">3</button>
-      <button class="pin-btn" onclick="pinPress('4')">4</button>
-      <button class="pin-btn" onclick="pinPress('5')">5</button>
-      <button class="pin-btn" onclick="pinPress('6')">6</button>
-      <button class="pin-btn" onclick="pinPress('7')">7</button>
-      <button class="pin-btn" onclick="pinPress('8')">8</button>
-      <button class="pin-btn" onclick="pinPress('9')">9</button>
-      <button class="pin-btn del" onclick="pinDel()">⌫</button>
-      <button class="pin-btn" onclick="pinPress('0')">0</button>
-      <button class="pin-btn ok-btn" onclick="pinSubmit()">OK</button>
-    </div>
-    <div id="pin-error" class="pin-error"></div>
-    <div id="pin-lockout" class="pin-lockout"></div>
-  </div>
 </body>
 </html>
