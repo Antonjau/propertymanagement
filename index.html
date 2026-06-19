@@ -546,11 +546,21 @@
           tenants = [];
           payments = [];
         }
+        console.log('Data loaded from Firebase:', { tenants: tenants.length, payments: payments.length });
         // Re-render UI when data changes
         renderDashboard();
         renderTenants();
         renderPayments();
       });
+    }
+    
+    // Initialize demo data if database is empty
+    function initializeDemoData() {
+      setTimeout(() => {
+        if (tenants.length === 0 && payments.length === 0) {
+          console.log('Database is empty. You can add tenants and record payments to see them appear.');
+        }
+      }, 1000);
     }
     
     // Save to Firebase
@@ -860,7 +870,7 @@
                       <th>Amount</th>
                       <th>Method</th>
                       <th>Date</th>
-                      <th>Receipt</th>
+                      <th>Download Receipt</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -871,7 +881,7 @@
                         <td style="font-weight: 600;" class="sensitive">KES ${parseFloat(p.amount).toLocaleString()}</td>
                         <td>${p.method}</td>
                         <td style="color: var(--text-secondary); font-size: 12px;">${p.date}</td>
-                        <td><button class="btn sm secondary" title="Download Receipt PDF" onclick="window.downloadReceipt('${p.id}')"><i class="ti ti-file-text"></i></button></td>
+                        <td><button class="btn sm primary" title="Download Receipt PDF" onclick="window.downloadReceipt('${p.id}')"><i class="ti ti-file-text"></i> PDF</button></td>
                       </tr>`).join('')
                     }
                   </tbody>
@@ -953,6 +963,8 @@
       const tbody = document.getElementById('payments-table');
       const sorted = [...payments].reverse();
       
+      console.log('Rendering payments:', sorted.length, 'payments found');
+      
       if (sorted.length === 0) {
         tbody.innerHTML = '<tr><td colspan="9" class="empty">No payments recorded.</td></tr>';
         return;
@@ -970,9 +982,11 @@
           <td style="color: var(--text-secondary); font-size: 12px; font-family: monospace;">${p.ref || '-'}</td>
           <td style="color: var(--primary-dark); font-size: 12px; font-family: monospace; font-weight: 600;">${receiptRef}</td>
           <td style="color: var(--text-secondary); font-size: 12px;">${p.date}</td>
-          <td style="display: flex; gap: 6px;">
-            <button class="btn sm secondary" title="Download Receipt PDF" onclick="window.downloadReceipt('${p.id}')"><i class="ti ti-file-text"></i></button>
-            <button class="btn sm danger" onclick="window.deletePayment('${p.id}')"><i class="ti ti-trash"></i></button>
+          <td>
+            <div style="display: flex; gap: 6px; align-items: center;">
+              <button class="btn sm secondary" title="Download Receipt PDF" onclick="window.downloadReceipt('${p.id}')"><i class="ti ti-file-text"></i> PDF</button>
+              <button class="btn sm danger" title="Delete Payment" onclick="window.deletePayment('${p.id}')"><i class="ti ti-trash"></i></button>
+            </div>
           </td>
         </tr>`;
       }).join('');
@@ -1093,6 +1107,7 @@
 
     // ============ INITIALIZATION ============
     loadData();
+    initializeDemoData();
 
 
     // ============ PIN LOCK ============
