@@ -520,12 +520,29 @@
       measurementId: "G-Q48EZ0EC7X"
     };
     
-    // Initialize Firebase
-    if (!firebase.apps.length) {
-      firebase.initializeApp(firebaseConfig);
-    }
-    const db = firebase.database();
+    let db = null;  // Start as null
 
+    function initFirebase() {
+      // Wait until Firebase is loaded
+      if (typeof firebase === 'undefined') {
+        setTimeout(initFirebase, 500);  // Retry in 500ms
+        return;
+      }
+      
+      // NOW it's safe to use Firebase
+      if (!firebase.apps.length) {
+        firebase.initializeApp(firebaseConfig);
+      }
+      db = firebase.database();
+      console.log('✅ Firebase initialized successfully');
+
+      // Now that db is defined, it is safe to load data
+      loadData();
+      initializeDemoData();
+    }
+
+    // Run AFTER page loads and Firebase is ready
+    document.addEventListener('DOMContentLoaded', initFirebase);
 
     // ============ STATE MANAGEMENT ============
     let tenants = [];
@@ -1105,11 +1122,6 @@
       a.click();
     };
 
-    // ============ INITIALIZATION ============
-    loadData();
-    initializeDemoData();
-
-
     // ============ PIN LOCK ============
     // NOTE: This block now runs inside DOMContentLoaded so that #pin-overlay
     // and its children definitely exist before we query them. Previously the
@@ -1134,7 +1146,7 @@
       if (!overlay) return; // safety guard, should never happen now
 
       function getStoredPin() { return localStorage.getItem(STORED_KEY); }
-      function savePin(p)     { localStorage.setItem(STORED_KEY, p); }
+      function savePin(p)      { localStorage.setItem(STORED_KEY, p); }
 
       function updateDots(len) {
         for (let i = 0; i < 4; i++) {
