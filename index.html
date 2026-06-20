@@ -15,7 +15,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
   <meta name="apple-mobile-web-app-title" content="Njau's Empire">
-  <link rel="manifest" id="pwa-manifest-link">
+  <link rel="manifest" id="pwa-manifest-link" href="manifest.json">
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     
@@ -63,6 +63,8 @@
       display: flex;
       justify-content: space-between;
       align-items: center;
+      flex-wrap: wrap;
+      gap: 10px;
     }
     
     header h1 {
@@ -74,6 +76,20 @@
       opacity: 0.9;
       font-size: 14px;
     }
+
+    .header-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+    #offline-banner {
+      display: none;
+      background: var(--warning);
+      color: #fff;
+      text-align: center;
+      padding: 8px 12px;
+      font-size: 13px;
+      font-weight: 600;
+      margin: -20px -20px 20px -20px;
+    }
+    #offline-banner.show { display: block; }
     
     .tabs {
       display: flex;
@@ -253,11 +269,19 @@
         <p style="margin: 5px 0 0 0;">Property Management System</p>
       </div>
     </div>
-    <button class="btn secondary sm" style="background: rgba(255,255,255,0.2); border: none; color: white;" onclick="window.togglePrivacy()">
-      <i id="privacy-icon" class="ti ti-eye-off" style="font-size: 20px;"></i>
-      <span id="privacy-text" style="margin-left: 5px;">Hide Financials</span>
-    </button>
+    <div class="header-actions">
+      <button id="install-btn" class="btn secondary sm" style="display:none; background: rgba(255,255,255,0.2); border: none; color: white;" onclick="window.installApp()">
+        <i class="ti ti-download" style="font-size: 20px;"></i>
+        <span style="margin-left: 5px;">Install App</span>
+      </button>
+      <button class="btn secondary sm" style="background: rgba(255,255,255,0.2); border: none; color: white;" onclick="window.togglePrivacy()">
+        <i id="privacy-icon" class="ti ti-eye-off" style="font-size: 20px;"></i>
+        <span id="privacy-text" style="margin-left: 5px;">Hide Financials</span>
+      </button>
+    </div>
   </header>
+
+  <div id="offline-banner"><i class="ti ti-wifi-off"></i> You're offline — showing last saved data. Changes will sync once you're back online.</div>
   
   <div class="container">
     <div class="tabs">
@@ -521,6 +545,7 @@
     };
     
     let db = null;  // Start as null
+    const CACHE_KEY = 'njau-data-cache';
 
     function initFirebase() {
       // Wait until Firebase is loaded
@@ -551,6 +576,51 @@
     const currentMonth = () => new Date().toISOString().slice(0, 7);
     const today = () => new Date().toISOString().slice(0, 10);
     const uid = () => Date.now().toString(36) + Math.random().toString(36).substring(2, 5);
+
+    // ============ OFFLINE CACHE ============
+    function saveLocalCache() {
+      try {
+        localStorage.setItem(CACHE_KEY, JSON.stringify({ tenants, payments, cachedAt: new Date().toISOString() }));
+      } catch (e) { console.warn('Could not save local cache', e); }
+    }
+
+    function loadLocalCache() {
+      try {
+        const raw = localStorage.getItem(CACHE_KEY);
+        if (!raw) return false;
+        const data = JSON.parse(raw);
+        tenants = data.tenants || [];
+        payments = data.payments || [];
+        return true;
+      } catch (e) { return false; }
+    }
+
+    function updateOfflineBanner() {
+      const banner = document.getElementById('offline-banner');
+      if (!banner) return;
+      banner.classList.toggle('show', !navigator.onLine);
+    }
+
+    window.addEventListener('online', () => { updateOfflineBanner(); });
+    window.addEventListener('offline', () => {
+      updateOfflineBanner();
+      // If we go offline and Firebase hasn't given us data yet, fall back to cache
+      if (tenants.length === 0 && payments.length === 0) {
+        if (loadLocalCache()) {
+          renderDashboard(); renderTenants(); renderPayments();
+        }
+      }
+    });
+    document.addEventListener('DOMContentLoaded', updateOfflineBanner);
+
+    // If we start offline, show cached data immediately rather than waiting on Firebase
+    document.addEventListener('DOMContentLoaded', () => {
+      if (!navigator.onLine) {
+        if (loadLocalCache()) {
+          renderDashboard(); renderTenants(); renderPayments();
+        }
+      }
+    });
     
     // Load from Firebase
     function loadData() {
@@ -564,10 +634,16 @@
           payments = [];
         }
         console.log('Data loaded from Firebase:', { tenants: tenants.length, payments: payments.length });
+        saveLocalCache();
         // Re-render UI when data changes
         renderDashboard();
         renderTenants();
         renderPayments();
+      }, (err) => {
+        console.warn('Firebase read failed, falling back to cache:', err.message);
+        if (loadLocalCache()) {
+          renderDashboard(); renderTenants(); renderPayments();
+        }
       });
     }
     
@@ -582,6 +658,12 @@
     
     // Save to Firebase
     function saveData() {
+      saveLocalCache();
+      if (!navigator.onLine) {
+        alert("You're offline. This change is saved on this device and will sync automatically once you're back online.");
+        renderDashboard(); renderTenants(); renderPayments();
+        return;
+      }
       db.ref('empire_data').set({ tenants, payments })
         .catch(err => alert("Error saving to database: " + err.message));
     }
@@ -1121,6 +1203,58 @@
       a.download = `njau-tenants-${today()}.csv`;
       a.click();
     };
+
+    // ============ DATE/MONTH PICKER FIX (mobile tap not opening calendar) ============
+    // Some mobile browsers need an explicit showPicker() call triggered by a
+    // direct user gesture (click) rather than relying on the native default
+    // behavior, especially when the input sits inside custom-styled wrappers.
+    document.addEventListener('DOMContentLoaded', function() {
+      function wirePicker(input) {
+        if (!input) return;
+        const openPicker = function(e) {
+          if (typeof input.showPicker === 'function') {
+            try { input.showPicker(); } catch (err) { /* ignore - some browsers restrict this */ }
+          }
+        };
+        input.addEventListener('click', openPicker);
+        input.addEventListener('focus', openPicker);
+      }
+      document.querySelectorAll('input[type="date"], input[type="month"]').forEach(wirePicker);
+    });
+
+    // ============ PWA: INSTALL BUTTON ============
+    let deferredInstallPrompt = null;
+    window.addEventListener('beforeinstallprompt', (e) => {
+      e.preventDefault();
+      deferredInstallPrompt = e;
+      const btn = document.getElementById('install-btn');
+      if (btn) btn.style.display = 'inline-flex';
+    });
+
+    window.installApp = async function() {
+      if (!deferredInstallPrompt) {
+        alert('To install: open your browser menu and choose "Add to Home Screen" or "Install App".');
+        return;
+      }
+      deferredInstallPrompt.prompt();
+      await deferredInstallPrompt.userChoice;
+      deferredInstallPrompt = null;
+      document.getElementById('install-btn').style.display = 'none';
+    };
+
+    window.addEventListener('appinstalled', () => {
+      const btn = document.getElementById('install-btn');
+      if (btn) btn.style.display = 'none';
+    });
+
+    // ============ PWA: SERVICE WORKER REGISTRATION ============
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('sw.js').catch(err => {
+          console.warn('Service worker registration failed:', err);
+        });
+      });
+    }
 
     // ============ PIN LOCK ============
     // NOTE: This block now runs inside DOMContentLoaded so that #pin-overlay
