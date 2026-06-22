@@ -9,6 +9,7 @@
   
   <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
   <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-firestore.js"></script>
 
   <meta name="theme-color" content="#2563eb">
   <meta name="mobile-web-app-capable" content="yes">
@@ -441,6 +442,13 @@
           </div>
         </div>
       </div>
+      <div class="card">
+        <div class="card-head"><h2>Migrate Legacy Data</h2></div>
+        <div class="card-body">
+          <p style="margin-bottom: 15px; color: var(--text-secondary);">One-time step: copies your old Realtime Database records into the new Firestore collections. Only run this once, after which your data lives in Firestore.</p>
+          <button class="btn secondary" onclick="window.migrateFromRTDB()"><i class="ti ti-database-export"></i> Migrate Realtime DB → Firestore</button>
+        </div>
+      </div>
     </div>
   </div>
   
@@ -544,8 +552,10 @@
       measurementId: "G-Q48EZ0EC7X"
     };
     
-    let db = null;  // Start as null
-    const CACHE_KEY = 'njau-data-cache';
+    let db = null;     // Firestore - primary data store
+    let rtdb = null;    // Realtime Database - kept only for one-time legacy migration
+    let unsubTenants = null;
+    let unsubPayments = null;
 
     function initFirebase() {
       // Wait until Firebase is loaded
@@ -558,12 +568,20 @@
       if (!firebase.apps.length) {
         firebase.initializeApp(firebaseConfig);
       }
-      db = firebase.database();
-      console.log('✅ Firebase initialized successfully');
+      db = firebase.firestore();
+      rtdb = firebase.database(); // only used by window.migrateFromRTDB()
 
-      // Now that db is defined, it is safe to load data
-      loadData();
-      initializeDemoData();
+      // Firestore's own offline cache: lets the app read/write while offline
+      // and automatically syncs queued writes once back online. This is why
+      // the manual localStorage cache used for Realtime DB is no longer needed.
+      db.enablePersistence({ synchronizeTabs: true }).catch((err) => {
+        console.warn('Firestore offline persistence not enabled:', err.code);
+      });
+
+      console.log('✅ Firebase (Firestore) initialized successfully');
+
+      listenTenants();
+      listenPayments();
     }
 
     // Run AFTER page loads and Firebase is ready
@@ -577,96 +595,86 @@
     const today = () => new Date().toISOString().slice(0, 10);
     const uid = () => Date.now().toString(36) + Math.random().toString(36).substring(2, 5);
 
-    // ============ OFFLINE CACHE ============
-    function saveLocalCache() {
-      try {
-        localStorage.setItem(CACHE_KEY, JSON.stringify({ tenants, payments, cachedAt: new Date().toISOString() }));
-      } catch (e) { console.warn('Could not save local cache', e); }
-    }
-
-    function loadLocalCache() {
-      try {
-        const raw = localStorage.getItem(CACHE_KEY);
-        if (!raw) return false;
-        const data = JSON.parse(raw);
-        tenants = data.tenants || [];
-        payments = data.payments || [];
-        return true;
-      } catch (e) { return false; }
-    }
-
+    // ============ OFFLINE BANNER ============
+    // Firestore handles the actual offline read/write caching for us now.
+    // This banner is purely a UX hint so the user knows why a save looks
+    // "instant" but hasn't necessarily hit the server yet.
     function updateOfflineBanner() {
       const banner = document.getElementById('offline-banner');
       if (!banner) return;
       banner.classList.toggle('show', !navigator.onLine);
     }
 
-    window.addEventListener('online', () => { updateOfflineBanner(); });
-    window.addEventListener('offline', () => {
-      updateOfflineBanner();
-      // If we go offline and Firebase hasn't given us data yet, fall back to cache
-      if (tenants.length === 0 && payments.length === 0) {
-        if (loadLocalCache()) {
-          renderDashboard(); renderTenants(); renderPayments();
-        }
-      }
-    });
+    window.addEventListener('online', updateOfflineBanner);
+    window.addEventListener('offline', updateOfflineBanner);
     document.addEventListener('DOMContentLoaded', updateOfflineBanner);
 
-    // If we start offline, show cached data immediately rather than waiting on Firebase
-    document.addEventListener('DOMContentLoaded', () => {
-      if (!navigator.onLine) {
-        if (loadLocalCache()) {
-          renderDashboard(); renderTenants(); renderPayments();
-        }
-      }
-    });
-    
-    // Load from Firebase
-    function loadData() {
-      db.ref('empire_data').on('value', (snapshot) => {
-        const data = snapshot.val();
-        if (data) {
-          tenants = data.tenants || [];
-          payments = data.payments || [];
-        } else {
-          tenants = [];
-          payments = [];
-        }
-        console.log('Data loaded from Firebase:', { tenants: tenants.length, payments: payments.length });
-        saveLocalCache();
-        // Re-render UI when data changes
+    // ============ FIRESTORE LISTENERS ============
+    // Each tenant/payment is its own document, so re-renders only happen
+    // when something actually changes, and reads/writes scale far better
+    // than the old single-blob Realtime DB approach.
+    function listenTenants() {
+      if (unsubTenants) unsubTenants();
+      unsubTenants = db.collection('tenants').onSnapshot((snapshot) => {
+        tenants = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
         renderDashboard();
         renderTenants();
+        renderPayments(); // tenant dropdown depends on this list too
+      }, (err) => console.warn('Tenants listener error:', err.message));
+    }
+
+    function listenPayments() {
+      if (unsubPayments) unsubPayments();
+      unsubPayments = db.collection('payments').onSnapshot((snapshot) => {
+        payments = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
+        renderDashboard();
         renderPayments();
-      }, (err) => {
-        console.warn('Firebase read failed, falling back to cache:', err.message);
-        if (loadLocalCache()) {
-          renderDashboard(); renderTenants(); renderPayments();
+      }, (err) => console.warn('Payments listener error:', err.message));
+    }
+
+    // ============ ONE-TIME MIGRATION: Realtime DB -> Firestore ============
+    // Run this once from the Backup tab. It copies your existing
+    // empire_data/{tenants,payments} blob from the Realtime Database into
+    // individual Firestore documents, preserving each record's original id.
+    // Safe to run more than once (it overwrites docs with the same id rather
+    // than duplicating them), but it's meant to be a one-off step.
+    window.migrateFromRTDB = function() {
+      if (!confirm("This copies your old Realtime Database data into Firestore.\nRun this only once. Continue?")) return;
+
+      rtdb.ref('empire_data').once('value').then((snap) => {
+        const data = snap.val();
+        if (!data || (!data.tenants?.length && !data.payments?.length)) {
+          alert('No legacy data found in the Realtime Database.');
+          return;
         }
+
+        const oldTenants = data.tenants || [];
+        const oldPayments = data.payments || [];
+        const allDocs = [
+          ...oldTenants.map((t) => ({ col: 'tenants', doc: t })),
+          ...oldPayments.map((p) => ({ col: 'payments', doc: p })),
+        ];
+
+        // Firestore batches max out at 500 writes - chunk just in case.
+        const chunks = [];
+        for (let i = 0; i < allDocs.length; i += 450) chunks.push(allDocs.slice(i, i + 450));
+
+        const commitChunk = (chunk) => {
+          const batch = db.batch();
+          chunk.forEach(({ col, doc }) => {
+            const { id, ...rest } = doc;
+            batch.set(db.collection(col).doc(id), rest);
+          });
+          return batch.commit();
+        };
+
+        return chunks.reduce((p, chunk) => p.then(() => commitChunk(chunk)), Promise.resolve());
+      }).then(() => {
+        alert(`Migration complete. Copied ${tenants.length} tenant(s) and existing payments into Firestore.`);
+      }).catch((err) => {
+        alert('Migration failed: ' + err.message);
       });
-    }
-    
-    // Initialize demo data if database is empty
-    function initializeDemoData() {
-      setTimeout(() => {
-        if (tenants.length === 0 && payments.length === 0) {
-          console.log('Database is empty. You can add tenants and record payments to see them appear.');
-        }
-      }, 1000);
-    }
-    
-    // Save to Firebase
-    function saveData() {
-      saveLocalCache();
-      if (!navigator.onLine) {
-        alert("You're offline. This change is saved on this device and will sync automatically once you're back online.");
-        renderDashboard(); renderTenants(); renderPayments();
-        return;
-      }
-      db.ref('empire_data').set({ tenants, payments })
-        .catch(err => alert("Error saving to database: " + err.message));
-    }
+    };
 
 
     // ============ PRIVACY TOGGLE ============
@@ -837,9 +845,9 @@
       const name = document.getElementById('tenant-name').value;
       
       if (!name) { alert('Tenant name is required'); return; }
-      
-      const tenant = {
-        id: id || uid(),
+
+      const existing = id ? tenants.find(t => t.id === id) : null;
+      const tenantData = {
         name,
         nid: document.getElementById('tenant-nid').value,
         phone: document.getElementById('tenant-phone').value,
@@ -851,23 +859,20 @@
         status: document.getElementById('tenant-status').value,
         moveInDate: document.getElementById('tenant-movein').value || '',
         vacateDate: document.getElementById('tenant-status').value === 'Vacated' ? (document.getElementById('tenant-vacate').value || '') : '',
-        createdDate: id ? tenants.find(t => t.id === id).createdDate : today()
+        createdDate: existing ? existing.createdDate : today()
       };
-      
-      if (id) {
-        tenants = tenants.map(t => t.id === id ? tenant : t);
-      } else {
-        tenants.push(tenant);
-      }
-      
-      saveData();
+
+      const docId = id || uid();
+      db.collection('tenants').doc(docId).set(tenantData)
+        .catch(err => alert('Error saving tenant: ' + err.message));
+
       window.closeTenantModal();
     };
     
     window.deleteTenant = function(id) {
       if (confirm('Remove this tenant record?')) {
-        tenants = tenants.filter(t => t.id !== id);
-        saveData();
+        db.collection('tenants').doc(id).delete()
+          .catch(err => alert('Error removing tenant: ' + err.message));
       }
     };
     
@@ -1024,8 +1029,8 @@
       }
       
       const tenant = tenants.find(t => t.id === tenantId);
+      const docId = uid();
       const newPayment = {
-        id: uid(),
         tenantId,
         month,
         category,
@@ -1034,23 +1039,24 @@
         ref,
         date: today()
       };
-      newPayment.receiptRef = buildReceiptRef(newPayment, tenant);
-      payments.push(newPayment);
-      
-      saveData(); // Firebase will sync and trigger UI refresh
-      
-      document.getElementById('pay-tenant').value = '';
-      document.getElementById('pay-month').value = '';
-      document.getElementById('pay-amount').value = '';
-      document.getElementById('pay-ref').value = '';
-      document.getElementById('pay-category').value = 'Full';
-      alert('Payment recorded successfully!');
+      newPayment.receiptRef = buildReceiptRef({ id: docId, ...newPayment }, tenant);
+
+      db.collection('payments').doc(docId).set(newPayment)
+        .then(() => {
+          document.getElementById('pay-tenant').value = '';
+          document.getElementById('pay-month').value = '';
+          document.getElementById('pay-amount').value = '';
+          document.getElementById('pay-ref').value = '';
+          document.getElementById('pay-category').value = 'Full';
+          alert('Payment recorded successfully!');
+        })
+        .catch(err => alert('Error recording payment: ' + err.message));
     };
     
     window.deletePayment = function(id) {
       if (confirm('Delete this payment?')) {
-        payments = payments.filter(p => p.id !== id);
-        saveData();
+        db.collection('payments').doc(id).delete()
+          .catch(err => alert('Error deleting payment: ' + err.message));
       }
     };
     
